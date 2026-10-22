@@ -31,6 +31,24 @@ ok("all words must match", M.filter(entries, "claude input").length === 1);
 ok("words across fields", M.filter(entries, "signal thursday").length === 1);
 ok("no match", M.filter(entries, "zzz").length === 0);
 
+// groupByApp
+const mixed = [
+  { key: "a", app: "Slack", timestamp: 5 },
+  { key: "b", app: "Signal", timestamp: 4 },
+  { key: "c", app: "slack", timestamp: 3 },
+  { key: "d", app: "", appIcon: "/x.png", timestamp: 2 },
+];
+ok("groupByApp keeps app together", M.groupByApp(mixed).map(e => e.key).join("") === "acbd");
+ok("groupOf falls back to Other", M.groupOf(mixed[3]) === "Other");
+
+ok("groupGlyph downloads is the down arrow", M.groupGlyph("Downloads") === "\uf063");
+ok("groupGlyph falls back to a bell", M.groupGlyph("Other") === "\uf0f3");
+
+const st = M.stack(M.groupByApp(mixed), {});
+ok("stack shows newest per app", st.shown.map(e => e.key).join("") === "abd");
+ok("stack counts hidden", st.more.a === 1 && st.more.b === 0);
+ok("stack open shows all", M.stack(M.groupByApp(mixed), { slack: true }).shown.length === 4);
+
 // dayOf
 const now = new Date(2026, 8, 30, 15, 0).getTime(); // Wed 30 Sep 2026
 ok("today", M.dayOf(new Date(2026, 8, 30, 0, 5).getTime(), now) === "Today");

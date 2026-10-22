@@ -10,9 +10,11 @@ import "components"
 // Notifications: a bell on the bar and a full-height side panel on the right
 // edge of the screen, driven from the keyboard.
 //
+//   →/l ←/h   open / close a stack
 //   ↑/↓ j/k   select           ⏎ / space   open (click) the selected one
 //   /         search           d           toggle Do Not Disturb
-//   C C       clear all        x / del     remove the selected one
+//   C C       clear all        x / del     remove it (a stack's top: the stack)
+//   X         clear the selected one's whole stack
 //   esc       leave search / close         tab   next bar panel
 //
 // History comes from bin/notification-store, which archives every file the
@@ -308,32 +310,78 @@ Panel {
     entries = next
     refreshLive()
     if (opened) markSeen()
-    if (!Model.matches(entry, filter)) return
-    // Keep the cursor on the same notification when one lands above it.
-    var keep = list.currentIndex
-    shown = [entry].concat(shown)
-    rows.insert(0, rowFor(entry))
-    list.currentIndex = keep <= 0 ? 0 : keep + 1
+    // Its app's group moves to the top, so rebuild (which keeps the cursor
+    // on the same notification).
+    if (Model.matches(entry, filter)) rebuild()
   }
 
-  function remove(index) {
+  // The top of a stack, open or closed, stands for all of its notifications,
+  // so removing it removes the lot. `mode` overrides: "stack" clears the
+  // selected one's whole stack, "one" removes just the selected one.
+  function isStackTop(index) {
+    var id = Model.groupOf(shown[index]).toLowerCase()
+    if (index > 0 && Model.groupOf(shown[index - 1]).toLowerCase() === id) return false
+    var n = 0
+    for (var i = 0; i < entries.length; i++)
+      if (Model.groupOf(entries[i]).toLowerCase() === id) n++
+    return n > 1
+  }
+
+  function remove(index, mode) {
     var entry = shown[index]
     if (!entry) return
-    entries = entries.filter(function(e) { return e.key !== entry.key })
-    var nextShown = shown.slice()
-    nextShown.splice(index, 1)
-    shown = nextShown
-    rows.remove(index)
-    list.currentIndex = Model.clampIndex(index, rows.count)
-    Quickshell.execDetached(store(["remove", String(entry.key)]))
+    var id = Model.groupOf(entry).toLowerCase()
+    var whole = mode === "stack" || (mode !== "one" && filter === "" && isStackTop(index))
+    var gone = entries.filter(function(e) {
+      return whole ? Model.groupOf(e).toLowerCase() === id : e.key === entry.key
+    }).map(function(e) { return String(e.key) })
+    entries = entries.filter(function(e) { return gone.indexOf(String(e.key)) < 0 })
+    rebuild(index)
+    Quickshell.execDetached(store(["remove"].concat(gone)))
+  }
+
+  // Clear-everything plays a shockwave down the list first: a red front
+  // sweeps from the top and each row is blasted off the right edge as it
+  // passes. The data goes when the front reaches the bottom.
+  readonly property int wipeMs: Math.round(slideMs * 2.5)
+  readonly property real wipeReach: Style.space(160)
+  property bool wiping: false
+  property real wave: 0
+  readonly property real waveY: wave * (list.height + wipeReach)
+
+  NumberAnimation {
+    id: wipeAnim
+    target: root
+    property: "wave"
+    from: 0
+    to: 1
+    duration: root.wipeMs
+    easing.type: Easing.InQuad
+    onFinished: root.finishWipe()
+  }
+
+  function finishWipe() {
+    wipeAnim.stop()
+    if (!wiping) return
+    wiping = false
+    wave = 0
+    entries = []
+    rebuild()
+    Quickshell.execDetached(store(["clear"]))
   }
 
   function clearAll() {
     clearArmed = false
     disarm.stop()
-    entries = []
-    rebuild()
-    Quickshell.execDetached(store(["clear"]))
+    if (wiping) return
+    if (wipeMs <= 0 || rows.count === 0) {
+      wiping = true
+      finishWipe()
+      return
+    }
+    wiping = true
+    wave = 0
+    wipeAnim.restart()
   }
 
   function pressClear() {
@@ -347,6 +395,10 @@ Panel {
 
   ListModel { id: rows }
 
+  // Group ids of the stacks that are open. Searching opens them all, since
+  // a match should never hide behind another notification.
+  property var expanded: ({})
+  property var stackMore: ({})
   function rowFor(e) {
     var ts = Number(e.timestamp || 0)
     return {
@@ -360,24 +412,61 @@ Panel {
       urgency: Number(e.urgency || 1),
       originalId: Number(e.originalId || 0),
       timestamp: ts,
-      day: Model.dayOf(ts, Date.now())
+      group: Model.groupOf(e),
+      more: stackMore[String(e.key)] || 0
     }
   }
 
-  function rebuild() {
+  // `fallback`: where the cursor goes if the selected notification is gone.
+  function rebuild(fallback) {
     var keepKey = list.currentIndex >= 0 && shown[list.currentIndex] ? shown[list.currentIndex].key : ""
-    shown = Model.filter(entries, filter)
+    var grouped = Model.groupByApp(Model.filter(entries, filter))
+    var stacked = Model.stack(grouped, filter !== "" ? allOpen(grouped) : expanded)
+    shown = stacked.shown
+    stackMore = stacked.more
     rows.clear()
-    var at = 0
+    var at = Math.max(0, fallback || 0)
     for (var i = 0; i < shown.length; i++) {
       rows.append(rowFor(shown[i]))
-      if (shown[i].key === keepKey) at = i
+      if (keepKey !== "" && shown[i].key === keepKey) at = i
     }
+    at = Math.min(at, shown.length - 1)
     list.currentIndex = rows.count > 0 ? at : -1
     if (rows.count > 0) list.positionViewAtIndex(at, ListView.Contain)
   }
 
+  function allOpen(list) {
+    var open = {}
+    for (var i = 0; i < list.length; i++) open[Model.groupOf(list[i]).toLowerCase()] = true
+    return open
+  }
+
   onFilterChanged: rebuild()
+
+  // Open or close the stack the selected notification belongs to. Closing
+  // leaves the cursor on the stack's top.
+  function setExpanded(open) {
+    var entry = shown[list.currentIndex]
+    if (!entry || filter !== "") return
+    var id = Model.groupOf(entry).toLowerCase()
+    var next = {}
+    for (var k in expanded) next[k] = expanded[k]
+    if (open) next[id] = true
+    else delete next[id]
+    expanded = next
+    if (!open) {
+      var top = Model.stack(Model.groupByApp(entries), next).shown
+      for (var i = 0; i < top.length; i++)
+        if (Model.groupOf(top[i]).toLowerCase() === id) { list.currentIndex = -1; rebuildAt(top[i].key); return }
+    }
+    rebuild()
+  }
+
+  function rebuildAt(key) {
+    rebuild()
+    for (var i = 0; i < shown.length; i++)
+      if (shown[i].key === key) { list.currentIndex = i; return }
+  }
 
   function move(delta) {
     if (rows.count === 0) return
@@ -400,6 +489,8 @@ Panel {
   function activate(index) {
     var entry = shown[index]
     if (!entry) return
+    // A collapsed stack opens first; a second press acts on the notification.
+    if ((stackMore[String(entry.key)] || 0) > 0 && filter === "") { setExpanded(true); return }
     // Check liveness fresh: the toast may have expired since the panel opened.
     refreshLive(function() { root.activateEntry(entry) })
   }
@@ -441,6 +532,7 @@ Panel {
 
   // Named so the test IPC can drive it: synthetic input doesn't reach the shell.
   function handleKey(name) {
+    if (wiping) return true
     if (name !== "clear") { clearArmed = false; disarm.stop() }
     switch (name) {
     case "down": move(1); return true
@@ -450,10 +542,13 @@ Panel {
     case "home": list.currentIndex = rows.count > 0 ? 0 : -1; return true
     case "end": list.currentIndex = rows.count - 1; return true
     case "enter": activate(list.currentIndex); return true
+    case "expand": setExpanded(true); return true
+    case "collapse": setExpanded(false); return true
     case "search": startSearch(); return true
     case "dnd": toggleDnd(); return true
     case "clear": pressClear(); return true
     case "remove": remove(list.currentIndex); return true
+    case "removeStack": remove(list.currentIndex, "stack"); return true
     case "escape":
       if (filter !== "") endSearch(false)
       else close()
@@ -471,8 +566,11 @@ Panel {
     if (k === Qt.Key_Home || t === "g") return "home"
     if (k === Qt.Key_End || t === "G") return "end"
     if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) return "enter"
+    if (k === Qt.Key_Right || t === "l") return "expand"
+    if (k === Qt.Key_Left || t === "h") return "collapse"
     if (k === Qt.Key_Escape) return "escape"
-    if (k === Qt.Key_Delete || t === "x" || t === "X") return "remove"
+    if (k === Qt.Key_Delete || t === "x") return "remove"
+    if (t === "X") return "removeStack"
     if (t === "/") return "search"
     if (t === "d" || t === "D") return "dnd"
     // Capital C only, twice: destructive, so it must not fire from ordinary
@@ -523,6 +621,7 @@ Panel {
 
   onOpenedChanged: {
     if (!opened) {
+      finishWipe()
       slideTo(slideDistance, Easing.InCubic, Math.round(slideMs * 0.6))
       searching = false
       search.text = ""
@@ -665,6 +764,50 @@ Panel {
         }
         if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return
         if (name !== "" && root.handleKey(name)) event.accepted = true
+      }
+
+      // The shockwave front, drawn over the list only. Coordinates inside are
+      // the list's own, so `root.waveY` is its vertical position.
+      Item {
+        id: shock
+        z: 5
+        visible: root.wiping
+        clip: true
+        x: content.x + list.x
+        y: content.y + list.y
+        width: list.width
+        height: list.height
+        opacity: 1 - Math.max(0, (root.wave - 0.85) / 0.15)
+
+        // Trailing heat behind the front.
+        Rectangle {
+          width: parent.width
+          height: root.wipeReach
+          y: root.waveY - height
+          gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0) }
+            GradientStop { position: 1.0; color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.5) }
+          }
+        }
+
+        // The front itself: a hot core inside a wider glow.
+        Rectangle {
+          width: parent.width
+          height: Style.space(14)
+          y: root.waveY - height / 2
+          gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0) }
+            GradientStop { position: 0.5; color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.85) }
+            GradientStop { position: 1.0; color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0) }
+          }
+        }
+
+        Rectangle {
+          width: parent.width
+          height: Math.max(2, Style.space(3))
+          y: root.waveY - height / 2
+          color: Qt.lighter(Color.urgent, 1.6)
+        }
       }
 
       Column {
@@ -839,23 +982,41 @@ Panel {
 
           onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
 
-          section.property: "day"
+          section.property: "group"
           section.criteria: ViewSection.FullString
           section.delegate: Item {
             id: daySection
             required property string section
             width: list.width - list.lane
             height: dayLabel.implicitHeight + Style.space(12)
+            readonly property real hit: root.wiping
+              ? Math.max(0, Math.min(1, (root.waveY - (y - list.contentY)) / root.wipeReach)) : 0
+            opacity: 1 - hit
 
-            PanelSectionHeader {
-              id: dayLabel
+            Row {
               anchors.left: parent.left
               anchors.leftMargin: Style.space(2)
               anchors.bottom: parent.bottom
               anchors.bottomMargin: Style.space(4)
-              text: daySection.section.toUpperCase()
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+              spacing: Style.space(6)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: Model.groupGlyph(daySection.section)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.icon
+                color: root.foreground
+                opacity: 0.6
+              }
+
+              PanelSectionHeader {
+                id: dayLabel
+                anchors.verticalCenter: parent.verticalCenter
+                text: daySection.section.toUpperCase()
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
             }
           }
 
@@ -865,6 +1026,11 @@ Panel {
             required property int index
 
             width: list.width - list.lane
+            // How far the shockwave has swept past this row (0 untouched, 1 gone).
+            readonly property real hit: root.wiping
+              ? Math.max(0, Math.min(1, (root.waveY - (y - list.contentY)) / root.wipeReach)) : 0
+            opacity: 1 - hit
+            transform: Translate { x: row.hit * row.hit * list.width }
             app: model.app
             appIcon: model.appIcon
             summary: model.summary
@@ -872,6 +1038,7 @@ Panel {
             image: model.image
             glyph: model.glyph
             urgency: model.urgency
+            more: model.more
             timestamp: model.timestamp
             now: root.now
             live: root.live.indexOf(model.key) >= 0
@@ -882,7 +1049,7 @@ Panel {
             fontFamily: root.fontFamily
 
             onClicked: { list.currentIndex = row.index; root.activate(row.index) }
-            onRemoveRequested: root.remove(row.index)
+            onRemoveRequested: root.remove(row.index, "one")
           }
         }
 
@@ -905,19 +1072,30 @@ Panel {
 
         // ---------------------------------------------------------- foot
 
-        Text {
+        Column {
           id: foot
-          textFormat: Text.PlainText
           width: parent.width
-          horizontalAlignment: Text.AlignHCenter
-          wrapMode: Text.WordWrap
-          text: root.searching
-            ? "type to filter · ↑↓ select · ⏎ done · esc clear"
-            : "↑↓ select · ⏎ open · x remove · tab next panel"
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          color: root.foreground
-          opacity: 0.45
+          spacing: Style.space(2)
+
+          Repeater {
+            model: root.searching
+              ? ["type to filter · ↑↓ select · ⏎ done · esc clear"]
+              : ["↑↓ select · ⏎ open · x remove · tab next panel",
+                 "→ open stack · ← close stack · X clear stack"]
+
+            Text {
+              required property string modelData
+              textFormat: Text.PlainText
+              width: foot.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              text: modelData
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              color: root.foreground
+              opacity: 0.45
+            }
+          }
         }
       }
     }

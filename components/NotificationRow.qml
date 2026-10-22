@@ -19,6 +19,7 @@ Item {
   property double timestamp: 0
   property double now: 0
   property int urgency: 1
+  property int more: 0
   property bool live: false
   property bool unread: false
   property bool selected: false
@@ -45,7 +46,24 @@ Item {
     return Quickshell.iconPath(v, true)
   }
 
-  implicitHeight: card.implicitHeight
+  implicitHeight: card.implicitHeight + (more > 0 ? Style.space(8) : 0)
+
+  // Edges of the notifications stacked underneath this one.
+  Repeater {
+    model: Math.min(root.more, 2)
+
+    Rectangle {
+      required property int index
+      anchors.left: card.left
+      anchors.right: card.right
+      anchors.leftMargin: Style.space(6) * (index + 1)
+      anchors.rightMargin: Style.space(6) * (index + 1)
+      y: card.height - Style.space(4) + Style.space(4) * index
+      height: Style.space(8)
+      radius: Style.space(8)
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+    }
+  }
 
   Rectangle {
     id: card
@@ -159,7 +177,8 @@ Item {
           textFormat: Text.PlainText
           anchors.left: parent.left
           width: parent.width - whenLabel.implicitWidth - Style.space(12)
-          text: root.senderName + (root.live ? "  • on screen" : "")
+          text: root.senderName + (root.live ? "  • on screen" : "") +
+                (root.more > 0 ? "  +" + root.more + " more" : "")
           elide: Text.ElideRight
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

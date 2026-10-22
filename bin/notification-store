@@ -15,7 +15,7 @@
 #                  changes (another bar instance, a remove, a clear)
 #   sync           archive anything not archived yet
 #   list [N]       newest-first array of up to N entries (default 500)
-#   remove KEY     drop one entry
+#   remove KEY...  drop entries
 #   clear          drop everything, and Omarchy's own history too
 #   prune          apply the retention limits
 #   live           keys of toasts still on screen, newest first
@@ -199,10 +199,12 @@ remove_key() {
 }
 
 cmd_remove() {
+  local key
   ensure_store
-  [[ ${1:-} =~ ^[A-Za-z0-9-]+$ ]] || die "remove needs a key"
-  with_lock remove_key "$1"
-  printf '{"ok":true,"removed":%s}\n' "$(json_str "$1")"
+  (( $# > 0 )) || die "remove needs a key"
+  for key; do [[ $key =~ ^[A-Za-z0-9-]+$ ]] || die "remove needs a key"; done
+  for key; do with_lock remove_key "$key"; done
+  printf '{"ok":true,"removed":%s}\n' "$(json_str "$*")"
 }
 
 clear_all() {
@@ -273,11 +275,11 @@ case ${1:-} in
   watch) cmd_watch ;;
   sync) cmd_sync >/dev/null; printf '{"ok":true}\n' ;;
   list) cmd_list "${2:-500}" ;;
-  remove) cmd_remove "${2:-}" ;;
+  remove) shift; cmd_remove "$@" ;;
   clear) cmd_clear ;;
   prune) ensure_store; with_lock prune; printf '{"ok":true}\n' ;;
   live) cmd_live ;;
   seen) cmd_seen "${2:-}" ;;
   seed) cmd_seed "${2:-20}" ;;
-  *) die "usage: notification-store watch|sync|list [N]|remove KEY|clear|prune|live|seen [MS]|seed [N]" ;;
+  *) die "usage: notification-store watch|sync|list [N]|remove KEY...|clear|prune|live|seen [MS]|seed [N]" ;;
 esac

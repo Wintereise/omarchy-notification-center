@@ -46,6 +46,75 @@ function filter(entries, query) {
   return out
 }
 
+// Heading an entry is grouped under: its sender, else "Other".
+function groupOf(entry) {
+  return sender(entry) || "Other"
+}
+
+// Reorder newest-first entries so each app's notifications sit together.
+// Groups are ordered by their newest entry; order within a group is kept.
+function groupByApp(entries) {
+  var order = []
+  var groups = {}
+  for (var i = 0; i < (entries || []).length; i++) {
+    var name = groupOf(entries[i])
+    var id = name.toLowerCase()
+    if (!groups.hasOwnProperty(id)) { groups[id] = []; order.push(id) }
+    groups[id].push(entries[i])
+  }
+  var out = []
+  for (var g = 0; g < order.length; g++) out = out.concat(groups[order[g]])
+  return out
+}
+
+// Nerd Font glyph for an app heading, by substring of the lowercased group
+// name (first match wins); a bell when nothing fits.
+var GROUP_GLYPHS = [
+  ["download", "\uf063"],
+  ["slack", "\uf198"],
+  ["signal", "\uf27a"],
+  ["message", "\uf27a"],
+  ["mail", "\uf0e0"],
+  ["calendar", "\uf073"],
+  ["battery", "\uf242"],
+  ["update", "\uf021"],
+  ["spotify", "\uf1bc"],
+  ["firefox", "\uf269"],
+  ["screenshot", "\uf030"],
+  ["term", "\uf120"],
+  ["ghostty", "\uf120"],
+  ["kitty", "\uf120"],
+  ["alacritty", "\uf120"]
+]
+
+function groupGlyph(name) {
+  var n = String(name || "").toLowerCase()
+  for (var i = 0; i < GROUP_GLYPHS.length; i++)
+    if (n.indexOf(GROUP_GLYPHS[i][0]) >= 0) return GROUP_GLYPHS[i][1]
+  return "\uf0f3"
+}
+
+// Collapse each app's group to its newest entry. `expanded` maps a group id
+// (lowercased groupOf) to true for stacks that are open. Takes grouped
+// entries (see groupByApp); returns the entries to show and, keyed by
+// entry key, how many are hidden behind each collapsed stack's top.
+function stack(entries, expanded) {
+  var shown = []
+  var more = {}
+  var seen = {}
+  var open = expanded || {}
+  var list = entries || []
+  for (var i = 0; i < list.length; i++) {
+    var id = groupOf(list[i]).toLowerCase()
+    if (open[id]) { shown.push(list[i]); continue }
+    if (seen[id]) { more[seen[id]]++; continue }
+    seen[id] = String(list[i].key)
+    more[seen[id]] = 0
+    shown.push(list[i])
+  }
+  return { shown: shown, more: more }
+}
+
 var WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
               "August", "September", "October", "November", "December"]
@@ -122,6 +191,10 @@ if (typeof module !== "undefined") {
     sender: sender,
     matches: matches,
     filter: filter,
+    groupOf: groupOf,
+    groupByApp: groupByApp,
+    groupGlyph: groupGlyph,
+    stack: stack,
     dayOf: dayOf,
     relativeTime: relativeTime,
     wrapIndex: wrapIndex,
