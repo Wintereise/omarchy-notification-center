@@ -54,7 +54,9 @@ were. The second command deletes the history this plugin kept.
 | `x` / `Delete` | remove the selected notification |
 | `Esc` | clear the search, or close the panel |
 | `Tab` | next bar panel |
+| `→` / `l`, `←` / `h` | open / close the selected app's stack |
 
+In the panel, click an app's heading (the one with ▸ or ▾) to open or close its stack.
 On the bar, left-click opens the panel and right-click toggles Do Not Disturb.
 The bell changes to a crossed-out bell while DND is on, and a badge counts
 what's new since you last opened the panel.

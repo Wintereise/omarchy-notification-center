@@ -400,6 +400,8 @@ Panel {
   // a match should never hide behind another notification.
   property var expanded: ({})
   property var stackMore: ({})
+  // Entries per group, so a header only offers to open or close a real stack.
+  property var groupSizes: ({})
   function rowFor(e) {
     var ts = Number(e.timestamp || 0)
     return {
@@ -425,6 +427,7 @@ Panel {
     var stacked = Model.stack(grouped, filter !== "" ? allOpen(grouped) : expanded)
     shown = stacked.shown
     stackMore = stacked.more
+    groupSizes = Model.groupSizes(entries)
     rows.clear()
     var at = Math.max(0, fallback || 0)
     for (var i = 0; i < shown.length; i++) {
@@ -444,23 +447,34 @@ Panel {
 
   onFilterChanged: rebuild()
 
-  // Open or close the stack the selected notification belongs to. Closing
-  // leaves the cursor on the stack's top.
+  // Open or close the stack the selected notification belongs to (←/→).
   function setExpanded(open) {
     var entry = shown[list.currentIndex]
-    if (!entry || filter !== "") return
-    var id = Model.groupOf(entry).toLowerCase()
+    if (!entry) return
+    setGroupExpanded(Model.groupOf(entry).toLowerCase(), open)
+  }
+
+  // Open or close one group's stack: the keys above and a click on the
+  // group's header both come here. Closing a stack the cursor is inside
+  // leaves the cursor on the stack's top; a cursor elsewhere stays put.
+  function setGroupExpanded(id, open) {
+    if (filter !== "") return
     var next = {}
     for (var k in expanded) next[k] = expanded[k]
     if (open) next[id] = true
     else delete next[id]
     expanded = next
-    if (!open) {
+    var cur = shown[list.currentIndex]
+    if (!open && cur && Model.groupOf(cur).toLowerCase() === id) {
       var top = Model.stack(Model.groupByApp(entries), next).shown
       for (var i = 0; i < top.length; i++)
         if (Model.groupOf(top[i]).toLowerCase() === id) { list.currentIndex = -1; rebuildAt(top[i].key); return }
     }
     rebuild()
+  }
+
+  function toggleGroup(id) {
+    setGroupExpanded(id, !expanded[id])
   }
 
   function rebuildAt(key) {
@@ -993,6 +1007,17 @@ Panel {
             readonly property real hit: root.wiping
               ? Math.max(0, Math.min(1, (root.waveY - (y - list.contentY)) / root.wipeReach)) : 0
             opacity: 1 - hit
+            readonly property string groupId: daySection.section.toLowerCase()
+            // Only a real stack, and not while searching (which opens them all).
+            readonly property bool toggles: root.filter === "" && (root.groupSizes[groupId] || 0) > 1
+            readonly property bool open: root.expanded[groupId] === true
+
+            MouseArea {
+              anchors.fill: parent
+              enabled: daySection.toggles
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleGroup(daySection.groupId)
+            }
 
             Row {
               anchors.left: parent.left
@@ -1017,6 +1042,17 @@ Panel {
                 text: daySection.section.toUpperCase()
                 foreground: root.foreground
                 fontFamily: root.fontFamily
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: daySection.toggles
+                textFormat: Text.PlainText
+                text: daySection.open ? "▾" : "▸"   // ▾ open, ▸ closed
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                color: root.foreground
+                opacity: 0.6
               }
             }
           }
@@ -1156,6 +1192,12 @@ Panel {
     }
 
     function reload(): string { root.load(); return "ok" }
+
+    // Same as clicking that group's header.
+    function group(name: string): string {
+      root.toggleGroup(String(name).toLowerCase())
+      return root.expanded[String(name).toLowerCase()] === true ? "open" : "closed"
+    }
   }
 
   Timer {

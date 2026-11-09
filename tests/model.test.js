@@ -48,6 +48,13 @@ const st = M.stack(M.groupByApp(mixed), {});
 ok("stack shows newest per app", st.shown.map(e => e.key).join("") === "abd");
 ok("stack counts hidden", st.more.a === 1 && st.more.b === 0);
 ok("stack open shows all", M.stack(M.groupByApp(mixed), { slack: true }).shown.length === 4);
+// groupSizes, and closing an open stack folds it back (the header toggle)
+const sizes = M.groupSizes(mixed);
+ok("groupSizes counts per group", sizes.slack === 2 && sizes.signal === 1 && sizes.other === 1);
+ok("groupSizes empty", Object.keys(M.groupSizes([])).length === 0);
+const opened = M.stack(M.groupByApp(mixed), { slack: true }).shown.length;
+const closed = M.stack(M.groupByApp(mixed), {}).shown.length;
+ok("stack closes again after opening", opened === 4 && closed === 3);
 
 // dayOf
 const now = new Date(2026, 8, 30, 15, 0).getTime(); // Wed 30 Sep 2026

@@ -67,6 +67,17 @@ function groupByApp(entries) {
   return out
 }
 
+// How many entries each group holds, by group id (lowercased groupOf). A
+// group of one has nothing to open or close.
+function groupSizes(entries) {
+  var sizes = {}
+  for (var i = 0; i < (entries || []).length; i++) {
+    var id = groupOf(entries[i]).toLowerCase()
+    sizes[id] = (sizes[id] || 0) + 1
+  }
+  return sizes
+}
+
 // Nerd Font glyph for an app heading, by substring of the lowercased group
 // name (first match wins); a bell when nothing fits.
 var GROUP_GLYPHS = [
@@ -193,6 +204,7 @@ if (typeof module !== "undefined") {
     filter: filter,
     groupOf: groupOf,
     groupByApp: groupByApp,
+    groupSizes: groupSizes,
     groupGlyph: groupGlyph,
     stack: stack,
     dayOf: dayOf,
