@@ -17,8 +17,9 @@ import "components"
 //   X         clear the selected one's whole stack
 //   esc       leave search / close         tab   next bar panel
 //
-// History comes from bin/notification-store, which archives every file the
-// Omarchy notification service writes (the service itself keeps only 10).
+// History comes from bin/notification-store, which archives every row of the
+// Omarchy notification service's live.json and history.json (the service
+// itself keeps 100 for 24 hours).
 // DND and "is this toast still on screen" go through the service's IPC.
 Panel {
   id: root
@@ -99,7 +100,7 @@ Panel {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: root.dndCall("dndState")
+    onTriggered: root.dndCall("isDnd")
   }
 
   // Keys of toasts still on screen, newest first (from `notification-store live`).

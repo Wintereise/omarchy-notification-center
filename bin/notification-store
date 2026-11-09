@@ -2,12 +2,16 @@
 #
 # Archive behind the jgarza.notification panel.
 #
-# Omarchy's notification service writes one JSON file per toast under
-# ~/.local/state/omarchy/notifications/ and moves it into history/ when the
-# toast leaves the screen, but history keeps only the newest 10 (and deletes
-# the icons they point at). This copies every file into an archive kept for
-# NS_KEEP_DAYS / NS_MAX_ITEMS, icons and all. It only ever reads the
-# service's directories.
+# Omarchy's notification service (4.5+) keeps two files under
+# ~/.local/state/omarchy/notifications/: live.json (cards on screen, oldest
+# first) and history.json (closed cards, newest first, at most 100 and 24
+# hours). Both are rewritten whole, atomically. This copies every row into an
+# archive kept for NS_KEEP_DAYS / NS_MAX_ITEMS. It only ever reads the
+# service's files.
+#
+# Rows arrive already sanitised by Omarchy: secret-bearing notifications
+# (one-time codes) are stored as "Verification notification" / "[redacted]",
+# and images never persist, so neither does the archive.
 #
 # Subcommands (all print JSON):
 #   watch          sync, then print each newly archived entry as a JSON line,
@@ -27,13 +31,13 @@ umask 077
 
 state_home=${XDG_STATE_HOME:-$HOME/.local/state}
 src_dir=${NS_SRC_DIR:-$state_home/omarchy/notifications}
-src_history=$src_dir/history
+src_live=$src_dir/live.json
+src_history=$src_dir/history.json
 store=${NS_STORE:-$state_home/jgarza-notification}
 archive=$store/archive.jsonl
-images=$store/images
 seen_file=$store/seen
-# Keys removed by hand. Their source file may still sit in Omarchy's history,
-# and without this the next sync would archive it all over again.
+# Keys removed by hand. Their row may still sit in Omarchy's live.json or
+# history.json, and without this the next sync would archive it all over again.
 removed_file=$store/removed
 lock_file=$store/lock
 
@@ -52,89 +56,78 @@ die() {
 command -v jq >/dev/null 2>&1 || { printf '{"ok":false,"error":"jq is not installed"}\n'; exit 1; }
 
 ensure_store() {
-  mkdir -p "$store" "$images" || die "cannot create $store"
+  mkdir -p "$store" || die "cannot create $store"
   [[ -f $archive ]] || : > "$archive"
-  chmod 700 "$store" "$images" 2>/dev/null || true
+  chmod 700 "$store" 2>/dev/null || true
 }
 
 with_lock() { ( exec 9>"$lock_file"; flock 9; "$@" ); }
 
 now_ms() { printf '%s' "$(($(date +%s%N) / 1000000))"; }
 
-have_key() { grep -qF "\"key\":\"$1\"" "$archive" 2>/dev/null; }
 was_removed() { grep -qxF "$1" "$removed_file" 2>/dev/null; }
 
-# Copy a local image next to the archive (≤ 5 MB, must really be an image),
-# print its new path, or "" when it can't be kept.
-copy_image() {
-  local src=${1#file://} dest="$images/$2-$3"
-  [[ -f $src ]] || return 0
-  (( $(stat -c%s -- "$src" 2>/dev/null || echo 0) <= 5242880 )) || return 0
-  case "$(file -bL --mime-type -- "$src" 2>/dev/null)" in
-    image/*) ;;
-    *) return 0 ;;
-  esac
-  cp -f -- "$src" "$dest" 2>/dev/null && printf '%s' "$dest"
-}
+# Omarchy caps each file near 100 rows of 16 KB; anything far bigger is not
+# its file, so it is not parsed.
+readable() { [[ -f $1 && -s $1 ]] && (( $(stat -c%s -- "$1" 2>/dev/null || echo 0) <= 8388608 )); }
 
-is_path() { [[ $1 == /* || $1 == file:///* ]]; }
-
-# Archive one service file; prints the entry when it is new. Keyed by the
-# file name (<timestamp>-<id>), which stays the same when the service moves a
-# toast into history, so each notification is archived once.
-ingest() {
-  local file=$1 key icon image file_src entry
-  key=$(basename -- "$file" .json)
-  [[ $key =~ ^[0-9]+-[0-9]+$ ]] || return 0
-  have_key "$key" && return 0
-  was_removed "$key" && return 0
-  [[ -s $file ]] || return 0
-  jq -e 'type == "object"' "$file" >/dev/null 2>&1 || return 0
-
-  icon=$(jq -r '.appIcon // ""' "$file")
-  image=$(jq -r '.image // ""' "$file")
-  is_path "$icon" && icon=$(copy_image "$icon" "$key" icon)
-  is_path "$image" && image=$(copy_image "$image" "$key" image)
-  # A screenshot/camera toast's action points at the picture. Keep that path
-  # (never the command itself) so Enter can open the picture later.
-  file_src=$(jq -r '.execArgv // "" | (if type == "string" then (fromjson? // []) else . end)
-      | if type == "array" then .[] else empty end | strings
-      | select(test("^/.*\\.(png|jpe?g|webp|gif)$"; "i"))' "$file" 2>/dev/null | head -n 1)
-
-  entry=$(jq -c --arg key "$key" --arg appIcon "$icon" --arg image "$image" --arg file "$file_src" '{
-      key: $key,
-      id: (.id // 0),
-      originalId: (.originalId // .id // 0),
-      app: (.app // "" | tostring),
-      appIcon: $appIcon,
-      summary: (.summary // "" | tostring),
-      body: (.body // "" | tostring),
-      image: $image,
-      file: $file,
-      glyph: (.glyph // "" | tostring),
-      urgency: (.urgency // 1),
-      timestamp: ((.timestamp // 0 | tonumber? // 0) as $t | if $t > 0 then $t else ($key | split("-")[0] | tonumber) end)
-    }' "$file" 2>/dev/null) || return 0
-  [[ -n $entry ]] || return 0
-  printf '%s\n' "$entry" >> "$archive"
-  printf '%s\n' "$entry"
-}
-
-sync_all() {
+# Keys of every row Omarchy still holds, one per line.
+source_keys() {
   local f
-  for f in "$src_history"/*.json "$src_dir"/*.json; do
-    [[ -e $f ]] && ingest "$f"
+  for f in "$src_live" "$src_history"; do
+    readable "$f" && jq -r 'if type == "array" then .[] | objects | .key | strings else empty end' "$f" 2>/dev/null
+  done
+  return 0
+}
+
+# Archive every row not archived or removed yet; prints the new entries.
+# Keyed by Omarchy's own row key, which stays the same when a card moves from
+# live.json into history.json, so each notification is archived once.
+sync_all() {
+  local known f
+  known=$( { jq -r '.key // empty' "$archive" 2>/dev/null; cat "$removed_file" 2>/dev/null; } )
+  for f in "$src_live" "$src_history"; do
+    readable "$f" || continue
+    jq -c --arg known "$known" '
+      ($known | split("\n") | map(select(. != "") | {(.): true}) | add // {}) as $seen
+      | if type == "array" then .[] else empty end | objects
+      | select((.key | type) == "string" and (.key | test("^[A-Za-z0-9_-]{1,120}$")))
+      | select($seen[.key] | not)
+      | ((.ts | if type == "number" then . else (tonumber? // 0) end) * 1000 | floor) as $t
+      | select($t > 0)
+      | {
+          key: .key,
+          id: (.originalId // 0),
+          originalId: (.originalId // 0),
+          app: (.app // "" | tostring),
+          appIcon: (.appIcon // "" | tostring),
+          summary: (.summary // "" | tostring),
+          body: (.body // "" | tostring),
+          image: "",
+          # A screenshot/camera card'"'"'s action points at the picture. Keep that
+          # path (never the command itself) so Enter can open it later.
+          file: ([.execArgv // "" | (if type == "string" then (fromjson? // []) else . end)
+                  | if type == "array" then .[] else empty end | strings
+                  | select(test("^/.*\\.(png|jpe?g|webp|gif)$"; "i"))] | first // ""),
+          glyph: (.glyph // "" | tostring),
+          urgency: (.urgency | if type == "number" then . else (tonumber? // 1) end),
+          timestamp: $t
+        }' "$f" 2>/dev/null
+  done | while IFS= read -r entry; do
+    # live.json and history.json can both hold a key mid-move.
+    key=$(jq -r .key <<< "$entry")
+    grep -qF "\"key\":\"$key\"" "$archive" && continue
+    printf '%s\n' "$entry" >> "$archive"
+    printf '%s\n' "$entry"
   done
   return 0
 }
 
 prune() {
-  local cutoff kept key f
-  # Tombstones only matter while Omarchy still holds the source file.
+  local cutoff kept
+  # Tombstones only matter while Omarchy still holds the row.
   if [[ -s $removed_file ]]; then
-    while IFS= read -r key; do
-      [[ -e $src_dir/$key.json || -e $src_history/$key.json ]] && printf '%s\n' "$key"
-    done < "$removed_file" > "$removed_file.tmp"
+    grep -xFf <(source_keys) "$removed_file" > "$removed_file.tmp" || : > "$removed_file.tmp"
     mv -f "$removed_file.tmp" "$removed_file"
   fi
   [[ -s $archive ]] || return 0
@@ -145,12 +138,6 @@ prune() {
            | select((.timestamp | type) == "number" and .timestamp >= $cutoff)]
          | sort_by(.timestamp) | .[]' "$archive" 2>/dev/null | tail -n "$max_items")
   printf '%s\n' "$kept" | grep -v '^$' > "$archive.tmp" || : > "$archive.tmp"
-  # Images whose entry is gone.
-  for f in "$images"/*; do
-    [[ -e $f ]] || continue
-    key=$(basename -- "$f"); key=${key%-*}
-    grep -qF "\"key\":\"$key\"" "$archive.tmp" || rm -f -- "$f"
-  done
   mv -f "$archive.tmp" "$archive"
 }
 
@@ -162,11 +149,12 @@ cmd_sync() {
 
 cmd_watch() {
   ensure_store
-  mkdir -p "$src_history" 2>/dev/null
   cmd_sync
   command -v inotifywait >/dev/null 2>&1 || die "inotifywait is not installed"
+  # Omarchy replaces its files by atomic rename (moved_to); close_write covers
+  # an in-place write.
   exec 3< <(inotifywait -m -q -e close_write -e moved_to --format '%w%f' \
-             "$src_dir" "$src_history" "$store" 2>/dev/null)
+             "$src_dir" "$store" 2>/dev/null)
   watcher=$!
   trap 'kill "$watcher" 2>/dev/null' EXIT INT TERM
   local file
@@ -175,10 +163,10 @@ cmd_watch() {
     # monitor) sees what any of them archived, removed, cleared or read.
     case $file in
       "$archive" | "$seen_file") printf '{"changed":true}\n'; continue ;;
-      "$store"/*) continue ;;
+      "$src_live" | "$src_history") ;;
+      *) continue ;;
     esac
-    [[ $file == *.json ]] || continue
-    with_lock ingest "$file"
+    with_lock sync_all
     with_lock prune
   done
 }
@@ -194,7 +182,6 @@ cmd_list() {
 remove_key() {
   grep -vF "\"key\":\"$1\"" "$archive" > "$archive.tmp" || : > "$archive.tmp"
   mv -f "$archive.tmp" "$archive"
-  rm -f -- "$images/$1-icon" "$images/$1-image"
   was_removed "$1" || printf '%s\n' "$1" >> "$removed_file"
 }
 
@@ -202,42 +189,35 @@ cmd_remove() {
   local key
   ensure_store
   (( $# > 0 )) || die "remove needs a key"
-  for key; do [[ $key =~ ^[A-Za-z0-9-]+$ ]] || die "remove needs a key"; done
+  for key; do [[ $key =~ ^[A-Za-z0-9_-]{1,120}$ ]] || die "remove needs a key"; done
   for key; do with_lock remove_key "$key"; done
   printf '{"ok":true,"removed":%s}\n' "$(json_str "$*")"
 }
 
 clear_all() {
-  # Tombstone everything Omarchy still holds, in case its own clear fails.
-  local f
-  for f in "$src_history"/*.json "$src_dir"/*.json; do
-    [[ -e $f ]] && basename -- "$f" .json
-  done > "$removed_file"
+  # Omarchy has no call to clear its own history, so tombstone everything it
+  # still holds; otherwise the next sync would bring it straight back.
+  source_keys > "$removed_file"
   : > "$archive"
-  rm -f -- "$images"/*
 }
 
 cmd_clear() {
   ensure_store
   with_lock clear_all
-  # Otherwise the next sync would bring Omarchy's last 10 straight back.
+  # Take the cards off the screen too.
   if [[ -z ${NS_SRC_DIR:-} ]] && command -v omarchy-shell >/dev/null 2>&1; then
-    omarchy-shell notifications clear >/dev/null 2>&1 || true
+    omarchy-shell notifications dismissAll >/dev/null 2>&1 || true
   fi
   printf '{"ok":true,"cleared":true}\n'
 }
 
-# A toast's file sits in the service's top-level directory while it is on
-# screen and moves into history/ when it leaves.
+# Keys of cards still on screen, newest first.
 cmd_live() {
-  local f keys=()
-  for f in "$src_dir"/*.json; do
-    [[ -e $f ]] || continue
-    f=$(basename -- "$f" .json)
-    [[ $f =~ ^[0-9]+-[0-9]+$ ]] && keys+=("$f")
-  done
-  if (( ${#keys[@]} == 0 )); then printf '[]\n'; return; fi
-  printf '%s\n' "${keys[@]}" | sort -t- -k1,1nr | jq -Rsc 'split("\n") | map(select(. != ""))'
+  readable "$src_live" || { printf '[]\n'; return; }
+  jq -c 'if type == "array" then [.[] | objects
+           | select((.key | type) == "string" and (.key | test("^[A-Za-z0-9_-]{1,120}$")))]
+           | sort_by(-(.ts | if type == "number" then . else (tonumber? // 0) end)) | map(.key)
+         else [] end' "$src_live" 2>/dev/null || printf '[]\n'
 }
 
 cmd_seen() {

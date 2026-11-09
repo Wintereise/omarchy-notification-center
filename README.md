@@ -8,20 +8,27 @@ A bell on the Omarchy bar that opens a full-height side panel of your
 notifications, against the right edge of the screen. You can do everything in
 the panel from the keyboard: move with the arrows or `j`/`k`, open with Enter,
 search with `/`, and toggle Do Not Disturb with `d`, without reaching for the
-mouse. History goes back 30 days rather than Omarchy's last 10.
+mouse. History goes back 30 days rather than Omarchy's 24 hours.
+
+This is a fork of
+[jgarza9788/notification](https://github.com/jgarza9788/notification),
+ported to the notification store Omarchy 4.5 introduced (`live.json` and
+`history.json` instead of a file per notification).
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/jgarza9788/notification.git --enable
+omarchy plugin add https://github.com/Wintereise/omarchy-notification-center.git --enable
 ```
 
-`--enable` puts the bell on the right side of the bar.
+`--enable` puts the bell on the right side of the bar. The plugin id is still
+`jgarza.notification`, so remove the original first if you have it:
+`omarchy plugin remove jgarza.notification`.
 
 ### Requirements
 
-`jq`, `inotify-tools`, `file` and `util-linux` (for `flock`). All four are part
-of Omarchy's base install. Without `inotifywait`, new notifications still show
+Omarchy 4.5 or later. `jq`, `inotify-tools` and `util-linux` (for `flock`),
+all part of Omarchy's base install. Without `inotifywait`, new notifications still show
 up, but only every 30 seconds.
 
 ### Remove
@@ -76,11 +83,14 @@ o.bind("SUPER + N", "Notifications", "omarchy-shell jgarza.notification toggle")
 
 ## History
 
-Omarchy's notification service keeps only the last 10 notifications.
+Omarchy's notification service keeps 100 notifications for 24 hours, in
+`~/.local/state/omarchy/notifications/live.json` and `history.json`.
 `bin/notification-store` copies each one as it arrives into
-`~/.local/state/jgarza-notification/` (mode `0700`), icons included. It keeps
-them for `keepDays` days, up to a limit of `maxItems`. Clearing the panel also
-clears Omarchy's own history.
+`~/.local/state/jgarza-notification/` (mode `0700`) and keeps them for
+`keepDays` days, up to a limit of `maxItems`. Omarchy doesn't store images,
+so the archive has none either. Clearing the panel also dismisses the cards
+on screen. Omarchy has no way to clear its own history from outside, so the
+plugin hides what Omarchy still holds until it ages out.
 
 ```
 bin/notification-store list 50 | jq -r '.[] | "\(.app): \(.summary)"'
@@ -88,10 +98,11 @@ bin/notification-store list 50 | jq -r '.[] | "\(.app): \(.summary)"'
 
 ### Privacy
 
-The archive keeps the full text of every notification, plus copies of its
-icon and picture, for `keepDays` days. That includes anything sensitive a
-notification carries, such as message previews or one-time login codes, and
-it stays there after Omarchy itself has forgotten them. Clearing from
+The archive keeps the full text of every notification for `keepDays` days,
+including message previews, and it stays there after Omarchy itself has
+forgotten them. Omarchy redacts notifications that carry one-time codes before
+it writes them down ("Verification notification" / "[redacted]"), so the
+archive only ever sees the redacted text. Clearing from
 Omarchy's own notification UI does not touch the archive. To get rid of
 entries, press `x` on one, or `Shift+C` twice to clear everything. You can
 also lower `keepDays`. The files are readable only by you.

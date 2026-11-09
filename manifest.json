@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "jgarza.notification",
   "name": "Notifications",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "jgarza",
-  "description": "The keyboard-first notification center: a bell on the bar and a side panel with 30 days of history. Arrows or j/k to select, Enter to open, / to search, d for Do Not Disturb, Shift+C twice to clear.",
+  "description": "The keyboard-first notification center: a bell on the bar and a side panel with 30 days of history (Omarchy 4.5+). Arrows or j/k to select, Enter to open, / to search, d for Do Not Disturb, Shift+C twice to clear.",
   "license": "MIT",
   "kinds": [
     "bar-widget"
@@ -112,5 +112,5 @@
       }
     ]
   },
-  "homepage": "https://github.com/jgarza9788/notification"
+  "homepage": "https://github.com/Wintereise/omarchy-notification-center"
 }
